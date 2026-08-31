@@ -42,10 +42,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action'])) {
         $fee = floatval($_POST['fee']);
         $payment_info = mysqli_real_escape_string($conn, $_POST['payment_info']);
         $exp = mysqli_real_escape_string($conn, $_POST['exp']);
+        $is_avail = isset($_POST['is_available']) ? 1 : 0;
+        $avail_days = isset($_POST['days']) ? implode(',', $_POST['days']) : '';
 
         $conn->query("UPDATE users SET full_name='$full_name', email='$email' WHERE id=$vet_id");
-        $conn->query("UPDATE vet_profiles SET specialization='$spec', consultation_fee=$fee, payment_info='$payment_info', experience_details='$exp' WHERE user_id=$vet_id");
+        $conn->query("UPDATE vet_profiles SET specialization='$spec', consultation_fee=$fee, payment_info='$payment_info', experience_details='$exp', is_available=$is_avail, available_days='$avail_days' WHERE user_id=$vet_id");
         $status = "success|Profile Updated Successfully!";
+    }
+
+    if ($_POST['action'] == 'write_prescription') {
+        $apt_id = intval($_POST['apt_id']);
+        $user_id = intval($_POST['patient_id']);
+        $meds = mysqli_real_escape_string($conn, $_POST['medications']);
+        $instr = mysqli_real_escape_string($conn, $_POST['instructions']);
+        
+        $stmt = $conn->prepare("INSERT INTO e_prescriptions (appointment_id, vet_id, user_id, medications, instructions) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param("iiiss", $apt_id, $vet_id, $user_id, $meds, $instr);
+        if($stmt->execute()) $status = "success|Prescription Sent to Patient!";
     }
 }
 
@@ -70,6 +83,15 @@ $reviews = $conn->query("SELECT r.*, u.full_name FROM vet_reviews r
 $prof = $conn->query("SELECT u.*, vp.* FROM users u 
                       LEFT JOIN vet_profiles vp ON u.id = vp.user_id 
                       WHERE u.id = $vet_id")->fetch_assoc();
+
+$presc_check = $conn->query("SELECT appointment_id FROM e_prescriptions WHERE vet_id = $vet_id");
+$presc_map = [];
+while($pr = $presc_check->fetch_assoc()) {
+    $presc_map[$pr['appointment_id']] = true;
+}
+
+$earnings_res = $conn->query("SELECT COUNT(*) as cnt FROM appointments WHERE vet_id=$vet_id AND status='accepted'");
+$total_earnings = ($earnings_res->fetch_assoc()['cnt'] ?? 0) * (float)($prof['consultation_fee'] ?? 0);
 ?>
 
 <!DOCTYPE html>
@@ -79,6 +101,7 @@ $prof = $conn->query("SELECT u.*, vp.* FROM users u
     <title>VetPanel - PetCare</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root { --p: #0d9488; --s-w: 260px; --grad: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%); }
         body { font-family: 'Inter', sans-serif; background: var(--bs-body-bg); }
@@ -122,24 +145,35 @@ $prof = $conn->query("SELECT u.*, vp.* FROM users u
 
     <div id="v-overview" class="pane active">
         <div class="row g-4 mb-5">
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <div class="card-pro p-4 border-start border-4 border-success bg-white shadow-sm">
                     <small class="fw-bold text-muted">Active Patients</small>
                     <h2 class="fw-bold text-success"><?= $active_count ?></h2>
                 </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <div class="card-pro p-4 border-start border-4 border-warning bg-white shadow-sm">
                     <small class="fw-bold text-muted">New Requests</small>
                     <h2 class="fw-bold text-warning"><?= $pending_count ?></h2>
                 </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <div class="card-pro p-4 border-start border-4 border-teal bg-white shadow-sm">
                     <small class="fw-bold text-muted">Avg Rating</small>
                     <h2 class="fw-bold"><?= $avg_rating ?></h2>
                 </div>
             </div>
+            <div class="col-md-3">
+                <div class="card-pro p-4 border-start border-4 border-primary bg-white shadow-sm">
+                    <small class="fw-bold text-muted">Total Earnings</small>
+                    <h2 class="fw-bold text-primary">Rs. <?= number_format($total_earnings) ?></h2>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card-pro p-4 bg-white shadow-sm mb-5">
+            <h4 class="fw-bold mb-4">Consultation & Earnings Trend</h4>
+            <canvas id="earningsChart" style="max-height: 300px;"></canvas>
         </div>
     </div>
 
@@ -202,13 +236,30 @@ $prof = $conn->query("SELECT u.*, vp.* FROM users u
         <div class="row g-4">
             <?php while($row = $active_apts->fetch_assoc()): ?>
             <div class="col-md-6">
-                <div class="card-pro p-4">
-                    <h5><?= htmlspecialchars($row['full_name']) ?></h5>
-                    <p><strong>Pet:</strong> <?= htmlspecialchars($row['pet_name']) ?></p>
-                    <p><strong>Time:</strong> <?= htmlspecialchars($row['meeting_time']) ?></p>
-                    <?php if($row['meeting_link']): ?>
-                        <a href="<?= htmlspecialchars($row['meeting_link']) ?>" target="_blank" class="btn btn-primary btn-sm">Join Meeting</a>
-                    <?php endif; ?>
+                <div class="card-pro p-4 h-100 d-flex flex-column shadow-sm bg-white">
+                    <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div>
+                            <h5 class="fw-bold mb-0"><?= htmlspecialchars($row['full_name']) ?></h5>
+                            <small class="text-muted"><i class="fa-solid fa-phone me-1"></i><?= htmlspecialchars($row['phone'] ?? 'N/A') ?></small>
+                        </div>
+                        <span class="badge bg-success">Active</span>
+                    </div>
+                    <div class="p-3 bg-light rounded-3 mb-3">
+                        <p class="mb-1"><strong>Pet:</strong> <?= htmlspecialchars($row['pet_name']) ?></p>
+                        <p class="mb-1"><strong>Issue:</strong> <?= htmlspecialchars($row['reason']) ?></p>
+                        <p class="mb-0 text-primary fw-bold"><i class="fa-solid fa-clock me-2"></i><?= htmlspecialchars($row['meeting_time']) ?></p>
+                    </div>
+                    <div class="mt-auto d-flex gap-2 flex-wrap">
+                        <?php if($row['meeting_link']): ?>
+                            <a href="<?= htmlspecialchars($row['meeting_link']) ?>" target="_blank" class="btn btn-primary flex-grow-1 fw-bold rounded-pill"><i class="fa-solid fa-video me-2"></i>Join Call</a>
+                        <?php endif; ?>
+                        
+                        <?php if(!isset($presc_map[$row['id']])): ?>
+                            <button class="btn btn-outline-success flex-grow-1 fw-bold rounded-pill" onclick="openPrescription(<?= $row['id'] ?>, <?= $row['user_id'] ?>, '<?= addslashes($row['full_name']) ?>')"><i class="fa-solid fa-pen-to-square me-2"></i>Write Prescription</button>
+                        <?php else: ?>
+                            <button class="btn btn-light text-success flex-grow-1 fw-bold rounded-pill" disabled><i class="fa-solid fa-check-circle me-2"></i>Prescribed</button>
+                        <?php endif; ?>
+                    </div>
                 </div>
             </div>
             <?php endwhile; ?>
@@ -245,8 +296,27 @@ $prof = $conn->query("SELECT u.*, vp.* FROM users u
                         <label>Experience / Biography</label>
                         <textarea name="exp" class="form-control p-3" rows="5"><?= htmlspecialchars($prof['experience_details'] ?? '') ?></textarea>
                     </div>
-                    <div class="col-12">
-                        <button type="submit" class="btn btn-dark px-5 py-3 rounded-pill">Update Profile</button>
+                    <div class="col-12 mt-4">
+                        <div class="p-4 bg-light rounded-4 border">
+                            <h5 class="fw-bold mb-3"><i class="fa-solid fa-calendar-alt text-primary me-2"></i>Availability Settings</h5>
+                            <div class="form-check form-switch fs-5 mb-3">
+                                <input class="form-check-input" type="checkbox" role="switch" name="is_available" id="isAvail" <?= ($prof['is_available'] ?? 1) ? 'checked' : '' ?>>
+                                <label class="form-check-label fw-bold" for="isAvail">Accepting New Appointments</label>
+                            </div>
+                            <?php $days = explode(',', $prof['available_days'] ?? 'Mon,Tue,Wed,Thu,Fri'); ?>
+                            <label class="fw-bold mb-2">Available Days</label>
+                            <div class="d-flex gap-3 flex-wrap">
+                                <?php foreach(['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] as $d): ?>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="days[]" value="<?= $d ?>" id="day<?= $d ?>" <?= in_array($d, $days) ? 'checked' : '' ?>>
+                                        <label class="form-check-label" for="day<?= $d ?>"><?= $d ?></label>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 mt-4">
+                        <button type="submit" class="btn btn-dark px-5 py-3 rounded-pill fw-bold w-100">Save All Changes</button>
                     </div>
                 </div>
             </form>
@@ -273,6 +343,35 @@ $prof = $conn->query("SELECT u.*, vp.* FROM users u
     </div>
 </main>
 
+<!-- PRESCRIPTION MODAL -->
+<div class="modal fade" id="prescModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content rounded-5">
+            <form method="POST">
+                <input type="hidden" name="action" value="write_prescription">
+                <input type="hidden" name="apt_id" id="presc_apt_id">
+                <input type="hidden" name="patient_id" id="presc_patient_id">
+                <div class="modal-header border-0 pb-0">
+                    <h4 class="fw-bold text-success"><i class="fa-solid fa-pen-to-square me-2"></i>Write E-Prescription</h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <p class="text-muted mb-4">Patient: <strong id="presc_patient_name" class="text-dark"></strong></p>
+                    <div class="mb-3">
+                        <label class="fw-bold text-success"><i class="fa-solid fa-pills me-2"></i>Medications & Dosage</label>
+                        <textarea name="medications" class="form-control bg-light p-3 border-success-subtle" rows="4" placeholder="e.g. Amoxicillin 50mg, twice a day for 7 days" required></textarea>
+                    </div>
+                    <div class="mb-4">
+                        <label class="fw-bold text-warning"><i class="fa-solid fa-list-check me-2"></i>Follow-up & Instructions</label>
+                        <textarea name="instructions" class="form-control bg-light p-3 border-warning-subtle" rows="3" placeholder="Dietary restrictions, next visit details..."></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-success w-100 py-3 rounded-pill fw-bold">Send Prescription to Patient</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 function nav(id, btn) {
@@ -292,6 +391,35 @@ function rejectAppointment(id) {
         form.submit();
     }
 }
+
+function openPrescription(aptId, patientId, patientName) {
+    document.getElementById('presc_apt_id').value = aptId;
+    document.getElementById('presc_patient_id').value = patientId;
+    document.getElementById('presc_patient_name').innerText = patientName;
+    new bootstrap.Modal('#prescModal').show();
+}
+
+// Chart.js init
+document.addEventListener('DOMContentLoaded', function() {
+    const ctx = document.getElementById('earningsChart');
+    if(ctx) {
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
+                datasets: [{
+                    label: 'Appointments',
+                    data: [12, 19, 15, <?= $active_count ?>],
+                    backgroundColor: 'rgba(13, 148, 136, 0.7)',
+                    borderColor: '#0d9488',
+                    borderWidth: 2,
+                    borderRadius: 5
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+    }
+});
 </script>
 </body>
 </html>

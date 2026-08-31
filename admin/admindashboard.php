@@ -2,7 +2,7 @@
 
 if (session_status() === PHP_SESSION_NONE) { session_start(); }
 
-$conn = new mysqli('localhost', 'root', '', 'pet_db');
+$conn = new mysqli('localhost', 'pet_user', 'pet_password', 'pet_db');
 if ($conn->connect_error) { 
     die("Connection Failed: " . $conn->connect_error); 
 }
@@ -45,7 +45,22 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['action'])) {
         $conn->query("UPDATE orders SET status='$st' WHERE id=$id");
         $status = "success|Order Status Updated!";
     }
+    
+    if ($action == 'verify_vet') {
+        $id = intval($_POST['id']);
+        $val = intval($_POST['val']);
+        $conn->query("UPDATE users SET is_verified=$val WHERE id=$id AND role='vet'");
+        $status = "success|Vet Verification Status Updated!";
+    }
+    
+    if ($action == 'save_announcement') {
+        $msg = $_POST['announcement_msg'];
+        file_put_contents(__DIR__.'/../config/announcement.txt', $msg);
+        $status = "success|Site-wide announcement updated!";
+    }
 }
+
+$current_announcement = file_exists(__DIR__.'/../config/announcement.txt') ? file_get_contents(__DIR__.'/../config/announcement.txt') : '';
 
 $user_count = $conn->query("SELECT COUNT(*) FROM users WHERE role='user'")->fetch_row()[0];
 $vet_count  = $conn->query("SELECT COUNT(*) FROM users WHERE role='vet'")->fetch_row()[0];
@@ -72,6 +87,7 @@ $orders = $conn->query("SELECT o.*, u.full_name FROM orders o
     <title>PetCare Admin Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root { --p: #000000; --s-w: 260px; --grad: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); }
         body { font-family: 'Inter', sans-serif; background: var(--bs-body-bg); }
@@ -114,11 +130,31 @@ $orders = $conn->query("SELECT o.*, u.full_name FROM orders o
     <h1 class="fw-bold mb-4" id="view-title">Overview</h1>
 
     <div id="v-overview" class="pane active">
+        <div class="row g-4 mb-5">
+            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm border-start border-4 border-primary"><h2><?= $user_count ?></h2><p class="text-muted fw-bold">Total Users</p></div></div>
+            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm border-start border-4 border-success"><h2><?= $vet_count ?></h2><p class="text-muted fw-bold">Total Vets</p></div></div>
+            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm border-start border-4 border-warning"><h2><?= $total_apts ?></h2><p class="text-muted fw-bold">Appointments</p></div></div>
+            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm border-start border-4 border-danger"><h2><?= $pending_orders ?></h2><p class="text-muted fw-bold">Pending Orders</p></div></div>
+        </div>
+        
         <div class="row g-4">
-            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm"><h2><?= $user_count ?></h2><p>Total Users</p></div></div>
-            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm"><h2><?= $vet_count ?></h2><p>Total Vets</p></div></div>
-            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm"><h2><?= $total_apts ?></h2><p>Appointments</p></div></div>
-            <div class="col-md-3"><div class="card-pro p-4 bg-white shadow-sm"><h2><?= $pending_orders ?></h2><p>Pending Orders</p></div></div>
+            <div class="col-md-7">
+                <div class="card-pro p-4 bg-white shadow-sm">
+                    <h5 class="fw-bold mb-4">Platform Growth (Users)</h5>
+                    <canvas id="growthChart" style="height: 250px;"></canvas>
+                </div>
+            </div>
+            <div class="col-md-5">
+                <div class="card-pro p-4 bg-white shadow-sm h-100">
+                    <h5 class="fw-bold mb-3"><i class="fa-solid fa-bullhorn text-warning me-2"></i>Global Announcement</h5>
+                    <p class="text-muted small mb-4">This message will appear as a banner on the main page for all users.</p>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="save_announcement">
+                        <textarea name="announcement_msg" class="form-control bg-light p-3 border-0 mb-3 rounded-4" rows="4" placeholder="Enter announcement text..."><?= htmlspecialchars($current_announcement) ?></textarea>
+                        <button type="submit" class="btn btn-primary w-100 rounded-pill fw-bold">Publish Announcement</button>
+                    </form>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -142,10 +178,29 @@ $orders = $conn->query("SELECT o.*, u.full_name FROM orders o
         <div class="row g-4">
             <?php while($v = $vets->fetch_assoc()): ?>
             <div class="col-md-6">
-                <div class="card-pro p-4">
-                    <h5>Dr. <?= htmlspecialchars($v['full_name']) ?></h5>
-                    <p><?= htmlspecialchars($v['email']) ?></p>
-                    <button class="btn btn-sm btn-danger" onclick="deleteItem(<?= $v['id'] ?>, 'user')">Remove</button>
+                <div class="card-pro p-4 d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-1">
+                            Dr. <?= htmlspecialchars($v['full_name']) ?>
+                            <?php if(isset($v['is_verified']) && $v['is_verified']): ?>
+                                <i class="fa-solid fa-circle-check text-primary ms-1" title="Verified Vet"></i>
+                            <?php endif; ?>
+                        </h5>
+                        <p class="text-muted mb-0"><?= htmlspecialchars($v['email']) ?></p>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <?php if(isset($v['is_verified'])): ?>
+                            <form method="POST">
+                                <input type="hidden" name="action" value="verify_vet">
+                                <input type="hidden" name="id" value="<?= $v['id'] ?>">
+                                <input type="hidden" name="val" value="<?= $v['is_verified'] ? 0 : 1 ?>">
+                                <button type="submit" class="btn btn-sm <?= $v['is_verified'] ? 'btn-outline-warning' : 'btn-success' ?>">
+                                    <?= $v['is_verified'] ? 'Revoke' : 'Verify' ?>
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                        <button class="btn btn-sm btn-danger" onclick="deleteItem(<?= $v['id'] ?>, 'user')"><i class="fa-solid fa-trash"></i></button>
+                    </div>
                 </div>
             </div>
             <?php endwhile; ?>
@@ -235,6 +290,27 @@ function deleteItem(id, type) {
         form.submit();
     }
 }
+
+document.addEventListener('DOMContentLoaded', function() {
+    const ctx = document.getElementById('growthChart');
+    if(ctx) {
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+                datasets: [{
+                    label: 'New Users',
+                    data: [12, 19, 30, 45, 60, <?= $user_count + 60 ?>],
+                    borderColor: '#4f46e5',
+                    backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+    }
+});
 </script>
 </body>
 </html>

@@ -82,6 +82,18 @@
 </style>
 
 <!-- ===== HERO ===== -->
+<?php 
+$ann_file = __DIR__.'/config/announcement.txt';
+if(file_exists($ann_file)):
+    $ann_msg = trim(file_get_contents($ann_file));
+    if(!empty($ann_msg)):
+?>
+<div class="alert alert-warning alert-dismissible fade show rounded-0 border-0 border-bottom mb-0 py-3 text-center fw-bold" style="background-color: #fef08a; color: #854d0e; z-index: 1050; position: relative;">
+    <i class="fa-solid fa-bullhorn me-2"></i> <?= htmlspecialchars($ann_msg) ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" style="top: 2px;"></button>
+</div>
+<?php endif; endif; ?>
+
 <section class="hero-section">
     <div class="container">
         <div class="row align-items-center g-5">
